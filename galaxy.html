@@ -1,0 +1,594 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1" />
+  <title>Pixel Galaxy Shooter (Three.js)</title>
+  <style>
+    html,body{margin:0;height:100%;background:#000;overflow:hidden}
+    canvas{display:block;image-rendering:pixelated;image-rendering:crisp-edges}
+    #hud{
+      position:fixed;left:0;top:0;right:0;
+      display:flex;justify-content:space-between;gap:12px;
+      padding:10px 14px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size:14px; color:#d9f7ff;
+      text-shadow:0 2px 0 rgba(0,0,0,.8);
+      pointer-events:none;
+    }
+    #hud .box{
+      background:rgba(0,0,0,.25);
+      border:1px solid rgba(120,220,255,.25);
+      border-radius:10px;
+      padding:6px 10px;
+      backdrop-filter: blur(3px);
+    }
+    #help{
+      position:fixed;left:50%;bottom:12px;transform:translateX(-50%);
+      font-family: ui-monospace, monospace;
+      font-size:12px;color:#c7f9ff;opacity:.85;
+      background:rgba(0,0,0,.25);
+      border:1px solid rgba(120,220,255,.20);
+      border-radius:10px;
+      padding:6px 10px;
+      user-select:none;
+    }
+    #overlay{
+      position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+      font-family: ui-monospace, monospace;
+      color:#e8fbff;
+      background:radial-gradient(circle at 50% 60%, rgba(20,30,60,.45), rgba(0,0,0,.85));
+      text-align:center;
+    }
+    #overlay.hidden{display:none}
+    #overlay h1{margin:0 0 8px;font-size:22px;letter-spacing:1px}
+    #overlay p{margin:0 0 14px;opacity:.9;font-size:13px;line-height:1.35}
+    #overlay button{
+      font-family:inherit;font-size:14px;color:#001018;
+      background:linear-gradient(#8ff0ff,#40c6ff);
+      border:none;border-radius:12px;padding:10px 14px;cursor:pointer;
+      box-shadow:0 10px 30px rgba(0,255,255,.15);
+    }
+    #overlay button:active{transform:translateY(1px)}
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div class="box" id="scoreBox">SCORE: <span id="score">0</span></div>
+    <div class="box" id="livesBox">LIVES: <span id="lives">3</span></div>
+  </div>
+  <div id="help">Move: ← → / A D • Shoot: Space • Pause: P</div>
+  <div id="overlay">
+    <div>
+      <h1>PIXEL GALAXY SHOOTER</h1>
+      <p>8-bit retro vibe. Blast aliens, dodge hits.<br/>Press <b>Space</b> or click Start.</p>
+      <button id="startBtn">Start</button>
+    </div>
+  </div>
+
+  <script type="module">
+    import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
+
+    // -----------------------------
+    // Renderer / Scene / Camera
+    // -----------------------------
+    const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
+    renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setClearColor(0x000000, 1);
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+
+    // Orthographic camera for 2D-ish arcade look (16:9 world units)
+    const WORLD_H = 90;
+    let WORLD_W = WORLD_H * (16/9);
+    const camera = new THREE.OrthographicCamera(-WORLD_W/2, WORLD_W/2, WORLD_H/2, -WORLD_H/2, 0.1, 500);
+    camera.position.set(0, 0, 200);
+    camera.lookAt(0, 0, 0);
+
+    // Make textures pixel-crisp
+    function pixelTex(tex){
+      tex.magFilter = THREE.NearestFilter;
+      tex.minFilter = THREE.NearestFilter;
+      tex.generateMipmaps = false;
+      tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+      return tex;
+    }
+
+    // -----------------------------
+    // Pixel sprite generators
+    // -----------------------------
+    function makeCanvasTexture(drawFn, w=32, h=32){
+      const c = document.createElement("canvas");
+      c.width = w; c.height = h;
+      const g = c.getContext("2d");
+      g.imageSmoothingEnabled = false;
+      drawFn(g, w, h);
+      const tex = new THREE.CanvasTexture(c);
+      return pixelTex(tex);
+    }
+
+    // Player ship (NES-ish)
+    const playerTex = makeCanvasTexture((g,w,h)=>{
+      g.clearRect(0,0,w,h);
+      // body
+      const cx = w/2|0;
+      const palette = ["#09122b","#0fb6ff","#73fff2","#ffffff","#ff4df3"];
+      // outline
+      g.fillStyle = palette[0];
+      g.fillRect(cx-7, h-20, 14, 14);
+      g.fillRect(cx-3, h-26, 6, 6);
+      // fill
+      g.fillStyle = palette[1];
+      g.fillRect(cx-6, h-19, 12, 12);
+      g.fillStyle = palette[3];
+      g.fillRect(cx-1, h-24, 2, 4);
+      // wings
+      g.fillStyle = palette[2];
+      g.fillRect(cx-14, h-16, 7, 6);
+      g.fillRect(cx+7,  h-16, 7, 6);
+      // thrusters
+      g.fillStyle = palette[4];
+      g.fillRect(cx-4, h-6, 3, 3);
+      g.fillRect(cx+1, h-6, 3, 3);
+      g.fillStyle = "#ffd35a";
+      g.fillRect(cx-3, h-5, 1, 2);
+      g.fillRect(cx+2, h-5, 1, 2);
+    }, 32, 32);
+
+    // Enemy ship
+    const enemyTex = makeCanvasTexture((g,w,h)=>{
+      g.clearRect(0,0,w,h);
+      const palette = ["#1b0b2e","#7c3aed","#22d3ee","#f472b6","#ffffff"];
+      const cx = w/2|0, cy = h/2|0;
+      // outline
+      g.fillStyle = palette[0];
+      g.fillRect(cx-10, cy-4, 20, 10);
+      g.fillRect(cx-6, cy-10, 12, 6);
+      g.fillRect(cx-14, cy-1, 4, 5);
+      g.fillRect(cx+10, cy-1, 4, 5);
+      // fill
+      g.fillStyle = palette[1];
+      g.fillRect(cx-9, cy-3, 18, 8);
+      g.fillStyle = palette[2];
+      g.fillRect(cx-5, cy-9, 10, 4);
+      // eyes
+      g.fillStyle = palette[4];
+      g.fillRect(cx-6, cy-1, 3, 3);
+      g.fillRect(cx+3, cy-1, 3, 3);
+      g.fillStyle = palette[3];
+      g.fillRect(cx-5, cy, 1, 1);
+      g.fillRect(cx+4, cy, 1, 1);
+    }, 32, 32);
+
+    // Bullet (neon laser)
+    const bulletTex = makeCanvasTexture((g,w,h)=>{
+      g.clearRect(0,0,w,h);
+      g.fillStyle = "rgba(0,0,0,0)";
+      g.fillRect(0,0,w,h);
+      // glow core
+      g.fillStyle = "#9fffff";
+      g.fillRect(w/2-1, 2, 2, h-4);
+      g.fillStyle = "#00d9ff";
+      g.fillRect(w/2-2, 4, 1, h-8);
+      g.fillRect(w/2+1, 4, 1, h-8);
+      // tip
+      g.fillStyle = "#ffffff";
+      g.fillRect(w/2-1, 1, 2, 2);
+    }, 8, 24);
+
+    // Explosion sprite sheet-ish (we’ll randomize frames by scaling + opacity)
+    const puffTex = makeCanvasTexture((g,w,h)=>{
+      g.clearRect(0,0,w,h);
+      const px = (x,y,c)=>{ g.fillStyle=c; g.fillRect(x,y,1,1); };
+      const palette = ["#0b0b1f","#6d28d9","#22d3ee","#f472b6","#ffd35a","#ffffff"];
+      // A little pixel “burst”
+      const dots = [
+        [16,16,5],[15,16,4],[17,16,4],[16,15,4],[16,17,4],
+        [14,16,2],[18,16,2],[16,14,2],[16,18,2],
+        [13,16,1],[19,16,1],[16,13,1],[16,19,1],
+        [14,14,3],[18,14,3],[14,18,3],[18,18,3],
+        [12,15,1],[20,15,1],[12,17,1],[20,17,1],
+      ];
+      for(const [x,y,pi] of dots) px(x,y,palette[pi]);
+      // outline specks
+      px(11,16,palette[0]); px(21,16,palette[0]); px(16,11,palette[0]); px(16,21,palette[0]);
+    }, 32, 32);
+
+    // -----------------------------
+    // Background: starfield + nebula (canvas texture that scrolls)
+    // -----------------------------
+    function makeNebulaLayer(w=512, h=256){
+      const c = document.createElement("canvas");
+      c.width = w; c.height = h;
+      const g = c.getContext("2d");
+      g.imageSmoothingEnabled = false;
+
+      // base gradient
+      const grad = g.createLinearGradient(0,0,w,h);
+      grad.addColorStop(0, "#05010f");
+      grad.addColorStop(0.45, "#120a2b");
+      grad.addColorStop(1, "#060015");
+      g.fillStyle = grad;
+      g.fillRect(0,0,w,h);
+
+      // nebula blobs (pixel-ish)
+      function blob(cx, cy, r, col){
+        g.fillStyle = col;
+        for(let i=0;i<240;i++){
+          const a = Math.random()*Math.PI*2;
+          const rr = r*(0.2 + Math.random()*0.85);
+          const x = (cx + Math.cos(a)*rr)|0;
+          const y = (cy + Math.sin(a)*rr)|0;
+          const s = (1 + (Math.random()*3|0));
+          g.globalAlpha = 0.08 + Math.random()*0.12;
+          g.fillRect(x,y,s,s);
+        }
+        g.globalAlpha = 1;
+      }
+
+      blob(w*0.25, h*0.55, 120, "#7c3aed"); // purple
+      blob(w*0.55, h*0.35, 150, "#1d4ed8"); // blue
+      blob(w*0.75, h*0.60, 130, "#22d3ee"); // cyan
+      blob(w*0.65, h*0.45, 110, "#f472b6"); // pink
+
+      // stars
+      for(let i=0;i<750;i++){
+        const x = (Math.random()*w)|0;
+        const y = (Math.random()*h)|0;
+        const b = Math.random();
+        g.globalAlpha = 0.35 + b*0.65;
+        g.fillStyle = b > 0.85 ? "#ffffff" : (b > 0.6 ? "#9fffff" : "#8aa1ff");
+        g.fillRect(x,y,1,1);
+      }
+      g.globalAlpha = 1;
+
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      return pixelTex(tex);
+    }
+
+    const nebulaTex = makeNebulaLayer();
+    const bgMat = new THREE.MeshBasicMaterial({ map: nebulaTex });
+    const bg = new THREE.Mesh(new THREE.PlaneGeometry(WORLD_W*1.2, WORLD_H*1.2), bgMat);
+    bg.position.set(0,0,-50);
+    scene.add(bg);
+
+    // extra parallax stars (Points)
+    function makeStarPoints(count, z, spreadX, spreadY, size){
+      const geom = new THREE.BufferGeometry();
+      const pos = new Float32Array(count*3);
+      for(let i=0;i<count;i++){
+        pos[i*3+0] = (Math.random()-0.5)*spreadX;
+        pos[i*3+1] = (Math.random()-0.5)*spreadY;
+        pos[i*3+2] = z;
+      }
+      geom.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+      const mat = new THREE.PointsMaterial({ size, sizeAttenuation: false, color: 0xb6ffff });
+      const pts = new THREE.Points(geom, mat);
+      return pts;
+    }
+    const starsFar = makeStarPoints(380, -30, WORLD_W*1.4, WORLD_H*1.4, 2.0);
+    const starsNear = makeStarPoints(220, -20, WORLD_W*1.2, WORLD_H*1.2, 3.0);
+    starsNear.material.color.setHex(0xffffff);
+    scene.add(starsFar, starsNear);
+
+    // -----------------------------
+    // Game objects
+    // -----------------------------
+    const spriteMaterial = (tex)=> new THREE.SpriteMaterial({ map: tex, transparent: true });
+
+    const player = new THREE.Sprite(spriteMaterial(playerTex));
+    player.scale.set(10,10,1);
+    player.position.set(0, -WORLD_H/2 + 12, 0);
+    scene.add(player);
+
+    const bullets = [];
+    const enemies = [];
+    const explosions = [];
+
+    function spawnFormation(){
+      enemies.length = 0;
+      // simple formation grid
+      const rows = 3;
+      const cols = 7;
+      const startY = WORLD_H/2 - 18;
+      const gapX = 10;
+      const gapY = 9;
+      const width = (cols-1)*gapX;
+      for(let r=0;r<rows;r++){
+        for(let c=0;c<cols;c++){
+          const e = new THREE.Sprite(spriteMaterial(enemyTex));
+          e.scale.set(9,9,1);
+          e.position.set(-width/2 + c*gapX, startY - r*gapY, 0);
+          e.userData = { hp: 1, t: Math.random()*Math.PI*2 };
+          enemies.push(e);
+          scene.add(e);
+        }
+      }
+    }
+
+    function shoot(){
+      if (!state.running || state.paused) return;
+      if (state.cooldown > 0) return;
+      state.cooldown = 0.12;
+
+      const b = new THREE.Sprite(spriteMaterial(bulletTex));
+      b.scale.set(2.5, 7, 1);
+      b.position.set(player.position.x, player.position.y + 8, 1);
+      b.userData = { vy: 120 };
+      bullets.push(b);
+      scene.add(b);
+    }
+
+    function explode(x,y){
+      // burst of pixel puffs + small sparks
+      for(let i=0;i<10;i++){
+        const s = new THREE.Sprite(spriteMaterial(puffTex));
+        const sc = 4 + Math.random()*4;
+        s.scale.set(sc, sc, 1);
+        s.position.set(x + (Math.random()-0.5)*4, y + (Math.random()-0.5)*4, 2);
+        s.material.opacity = 1;
+        s.userData = {
+          vx:(Math.random()-0.5)*40,
+          vy:(Math.random()-0.5)*40,
+          life:0.35 + Math.random()*0.25
+        };
+        explosions.push(s);
+        scene.add(s);
+      }
+    }
+
+    // -----------------------------
+    // HUD + State
+    // -----------------------------
+    const scoreEl = document.getElementById("score");
+    const livesEl = document.getElementById("lives");
+    const overlay = document.getElementById("overlay");
+    const startBtn = document.getElementById("startBtn");
+
+    const state = {
+      running: false,
+      paused: false,
+      score: 0,
+      lives: 3,
+      cooldown: 0,
+      enemyPhase: 0,
+      enemyDir: 1,
+      enemySpeed: 10,
+      scroll: 0,
+      hitInvuln: 0,
+    };
+
+    function setHud(){
+      scoreEl.textContent = String(state.score);
+      livesEl.textContent = String(state.lives);
+    }
+    setHud();
+
+    function startGame(){
+      state.running = true;
+      state.paused = false;
+      state.score = 0;
+      state.lives = 3;
+      state.cooldown = 0;
+      state.enemyPhase = 0;
+      state.enemyDir = 1;
+      state.enemySpeed = 10;
+      state.scroll = 0;
+      state.hitInvuln = 0;
+
+      // clear existing objects
+      for (const b of bullets) scene.remove(b);
+      for (const e of enemies) scene.remove(e);
+      for (const ex of explosions) scene.remove(ex);
+      bullets.length = 0;
+      explosions.length = 0;
+
+      player.position.set(0, -WORLD_H/2 + 12, 0);
+      spawnFormation();
+      setHud();
+      overlay.classList.add("hidden");
+    }
+
+    function gameOver(){
+      state.running = false;
+      overlay.classList.remove("hidden");
+      overlay.querySelector("h1").textContent = "GAME OVER";
+      overlay.querySelector("p").innerHTML = `Final score: <b>${state.score}</b><br/>Press Space or click Start to retry.`;
+      startBtn.textContent = "Retry";
+    }
+
+    // -----------------------------
+    // Input
+    // -----------------------------
+    const keys = new Set();
+    window.addEventListener("keydown", (e)=>{
+      keys.add(e.code);
+      if (e.code === "Space") { e.preventDefault(); if(!state.running) startGame(); else shoot(); }
+      if (e.code === "KeyP") state.paused = !state.paused;
+    });
+    window.addEventListener("keyup", (e)=> keys.delete(e.code));
+    startBtn.addEventListener("click", ()=> startGame());
+
+    // Touch / pointer: drag to move, tap to shoot
+    let pointerDown = false;
+    let lastPointerX = 0;
+    renderer.domElement.addEventListener("pointerdown", (e)=>{
+      pointerDown = true;
+      lastPointerX = e.clientX;
+      if(!state.running) startGame();
+      else shoot();
+    });
+    window.addEventListener("pointerup", ()=> pointerDown = false);
+    window.addEventListener("pointermove", (e)=>{
+      if(!pointerDown || !state.running || state.paused) return;
+      const dx = e.clientX - lastPointerX;
+      lastPointerX = e.clientX;
+      const k = (dx / window.innerWidth) * WORLD_W * 1.7;
+      player.position.x = THREE.MathUtils.clamp(player.position.x + k, -WORLD_W/2 + 8, WORLD_W/2 - 8);
+    });
+
+    // -----------------------------
+    // Collision helpers
+    // -----------------------------
+    function hitTest(a, ar, b, br){
+      const dx = a.x - b.x;
+      const dy = a.y - b.y;
+      return (dx*dx + dy*dy) <= (ar+br)*(ar+br);
+    }
+
+    // -----------------------------
+    // Resize handling (keep 16:9 world, adapt camera bounds)
+    // -----------------------------
+    function resize(){
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      const aspect = window.innerWidth / window.innerHeight;
+      WORLD_W = WORLD_H * aspect;
+
+      camera.left = -WORLD_W/2;
+      camera.right = WORLD_W/2;
+      camera.top = WORLD_H/2;
+      camera.bottom = -WORLD_H/2;
+      camera.updateProjectionMatrix();
+
+      bg.geometry.dispose();
+      bg.geometry = new THREE.PlaneGeometry(WORLD_W*1.2, WORLD_H*1.2);
+    }
+    window.addEventListener("resize", resize);
+    resize();
+
+    // -----------------------------
+    // Main loop
+    // -----------------------------
+    let last = performance.now();
+    function loop(now){
+      const dt = Math.min(0.033, (now - last) / 1000);
+      last = now;
+
+      if (state.running && !state.paused){
+        // background scrolling (side-scrolling vibe)
+        state.scroll += dt * 0.03;
+        nebulaTex.offset.x = state.scroll; // drift sideways
+        nebulaTex.offset.y = Math.sin(state.scroll*2)*0.01;
+
+        // star parallax
+        starsFar.position.x = (starsFar.position.x - dt*2) % 1000;
+        starsNear.position.x = (starsNear.position.x - dt*5) % 1000;
+
+        // player move
+        const move = (keys.has("ArrowLeft") || keys.has("KeyA") ? -1 : 0) + (keys.has("ArrowRight") || keys.has("KeyD") ? 1 : 0);
+        if (move !== 0){
+          player.position.x = THREE.MathUtils.clamp(player.position.x + move * dt * 70, -WORLD_W/2 + 8, WORLD_W/2 - 8);
+        }
+
+        // cooldown
+        state.cooldown = Math.max(0, state.cooldown - dt);
+
+        // enemies movement (formation sway + step down)
+        state.enemyPhase += dt;
+        let minX = Infinity, maxX = -Infinity, minY = Infinity;
+        for (const e of enemies){
+          e.userData.t += dt*1.5;
+          e.position.x += state.enemyDir * dt * state.enemySpeed;
+          e.position.y += Math.sin(e.userData.t)*dt*2.0;
+
+          minX = Math.min(minX, e.position.x);
+          maxX = Math.max(maxX, e.position.x);
+          minY = Math.min(minY, e.position.y);
+        }
+        const edge = WORLD_W/2 - 10;
+        if (minX < -edge || maxX > edge){
+          state.enemyDir *= -1;
+          for (const e of enemies) e.position.y -= 2.2; // classic arcade drop
+          state.enemySpeed = Math.min(26, state.enemySpeed + 0.8);
+        }
+
+        // bullets update
+        for (let i=bullets.length-1;i>=0;i--){
+          const b = bullets[i];
+          b.position.y += b.userData.vy * dt;
+          if (b.position.y > WORLD_H/2 + 20){
+            scene.remove(b);
+            bullets.splice(i,1);
+          }
+        }
+
+        // explosions update
+        for (let i=explosions.length-1;i>=0;i--){
+          const ex = explosions[i];
+          ex.position.x += ex.userData.vx * dt;
+          ex.position.y += ex.userData.vy * dt;
+          ex.userData.life -= dt;
+          ex.material.opacity = Math.max(0, ex.userData.life / 0.6);
+          ex.scale.multiplyScalar(1 + dt*0.6);
+          if (ex.userData.life <= 0){
+            scene.remove(ex);
+            explosions.splice(i,1);
+          }
+        }
+
+        // collisions: bullets vs enemies
+        for (let bi=bullets.length-1;bi>=0;bi--){
+          const b = bullets[bi];
+          let hit = false;
+          for (let ei=enemies.length-1;ei>=0;ei--){
+            const e = enemies[ei];
+            if (hitTest(b.position, 2.0, e.position, 4.6)){
+              // remove bullet + enemy
+              explode(e.position.x, e.position.y);
+              scene.remove(e);
+              enemies.splice(ei,1);
+
+              scene.remove(b);
+              bullets.splice(bi,1);
+
+              state.score += 100;
+              setHud();
+              hit = true;
+              break;
+            }
+          }
+          if (hit) continue;
+        }
+
+        // player hit (enemy reaches bottom or collides)
+        state.hitInvuln = Math.max(0, state.hitInvuln - dt);
+        if (state.hitInvuln <= 0){
+          for (const e of enemies){
+            if (e.position.y < player.position.y + 4 || hitTest(player.position, 5.5, e.position, 4.6)){
+              explode(player.position.x, player.position.y);
+              state.lives -= 1;
+              state.hitInvuln = 1.2;
+              setHud();
+              if (state.lives <= 0){
+                gameOver();
+              } else {
+                // small knockback
+                player.position.x = 0;
+              }
+              break;
+            }
+          }
+        } else {
+          // blink invuln
+          player.material.opacity = (Math.sin(now*0.02) > 0 ? 1 : 0.35);
+        }
+        if (state.hitInvuln <= 0) player.material.opacity = 1;
+
+        // wave cleared => respawn with slightly harder pacing
+        if (enemies.length === 0){
+          state.enemySpeed = Math.min(28, state.enemySpeed + 2);
+          spawnFormation();
+        }
+      }
+
+      renderer.render(scene, camera);
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+
+  </script>
+</body>
+</html>
