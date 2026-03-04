@@ -1,0 +1,584 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>Defend Earth - Pixel Galaxy Shooter</title>
+  <script src="https://game-cdn.poki.com/scripts/v2/poki-sdk.js"></script>
+  <style>
+    body, html {
+      margin: 0; padding: 0; width: 100%; height: 100%;
+      overflow: hidden; background: #00050a;
+      display: flex; justify-content: center; align-items: center;
+    }
+    canvas {
+      display: block; image-rendering: pixelated;
+      max-width: 100%; max-height: 100%;
+      box-shadow: 0 0 50px rgba(0, 100, 255, 0.3);
+      background: #000;
+    }
+    #hud {
+      position: fixed; left: 0; top: 0; right: 0;
+      display: flex; justify-content: space-between;
+      padding: 15px 20px;
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 18px; font-weight: bold; color: #fff;
+      text-shadow: 0 0 10px #40c6ff;
+      pointer-events: none; z-index: 10;
+    }
+    #hud .box {
+      background: rgba(0, 15, 30, 0.7);
+      border: 2px solid #40c6ff;
+      border-radius: 4px; padding: 8px 15px;
+      box-shadow: inset 0 0 10px rgba(64, 198, 255, 0.5);
+    }
+    #help {
+      position: fixed; left: 50%; bottom: 15px; transform: translateX(-50%);
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 12px; color: #40c6ff; opacity: 0.7;
+      background: rgba(0, 0, 0, 0.6);
+      padding: 5px 15px; border-radius: 20px;
+      user-select: none; pointer-events: none; z-index: 10;
+    }
+    #overlay {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      font-family: 'Courier New', Courier, monospace;
+      color: #fff;
+      background: radial-gradient(circle, rgba(10, 30, 60, 0.95), rgba(0, 5, 10, 1));
+      text-align: center; z-index: 20;
+    }
+    #overlay.hidden { display: none; }
+    #overlay h1 { margin: 0 0 15px; font-size: 32px; letter-spacing: 4px; color: #40c6ff; text-shadow: 0 0 20px #40c6ff; }
+    #overlay p { margin: 0 0 30px; font-size: 16px; line-height: 1.6; opacity: 0.9; }
+    #overlay button {
+      font-family: inherit; font-size: 20px; font-weight: bold; color: #000;
+      background: #40c6ff; border: none; border-radius: 4px; padding: 12px 35px; cursor: pointer;
+      box-shadow: 0 0 20px rgba(64, 198, 255, 0.6);
+      text-transform: uppercase; transition: 0.1s;
+    }
+    #overlay button:hover { background: #fff; box-shadow: 0 0 30px #fff; transform: scale(1.05); }
+    #overlay button:active { transform: scale(0.95); }
+    #mobileControls {
+      position: fixed; bottom: 20px; left: 0; right: 0;
+      display: none; justify-content: space-between; padding: 0 30px;
+      pointer-events: none; z-index: 10;
+    }
+    .btn {
+      width: 70px; height: 70px; background: rgba(255,255,255,0.1);
+      border: 2px solid rgba(64, 198, 255, 0.3); border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      pointer-events: auto; font-size: 24px; color: #40c6ff;
+      user-select: none;
+    }
+    @media (max-width: 768px) { #mobileControls { display: flex; } #help { display: none; } }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+  <div id="hud">
+    <div class="box">SCORE: <span id="score">0</span></div>
+    <div class="box">BEST: <span id="highScore">0</span></div>
+  </div>
+  <div id="help">AD / Arrows: Move • Space: Shoot • P: Pause</div>
+  <div id="mobileControls">
+    <div style="display:flex; gap:20px;">
+      <div class="btn" id="btnLeft">←</div>
+      <div class="btn" id="btnRight">→</div>
+    </div>
+    <div class="btn" id="btnShoot">🔥</div>
+  </div>
+  <div id="overlay">
+    <div id="menuContent">
+      <h1>DEFEND EARTH</h1>
+      <p>ALIEN INVADERS DETECTED!<br/>PROTECT THE PLANET AT ALL COSTS.</p>
+      <button id="startBtn">ENGAGE</button>
+    </div>
+  </div>
+
+<script>
+// --- Constants & Config ---
+const CANVAS_WIDTH = 480;
+const CANVAS_HEIGHT = 640;
+const PLAYER_SPEED = 6;
+const BULLET_SPEED = 10;
+const ALIEN_SPEED_BASE = 2.0;
+const SPAWN_RATE_BASE = 1200;
+
+// --- Sound System ---
+let audioCtx;
+let musicInterval;
+let musicNodes = [];
+
+function initAudio() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function playSound(freq, type, duration, vol=0.1) {
+    try {
+        initAudio();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+        osc.start();
+        osc.stop(audioCtx.currentTime + duration);
+    } catch(e) {}
+}
+
+function playMusic() {
+    if (musicInterval) return;
+    initAudio();
+    let noteIndex = 0;
+    const notes = [110, 130.81, 146.83, 164.81, 110, 130.81, 146.83, 196]; // A C D E sequence
+    const bass = [55, 55, 65.41, 65.41, 73.42, 73.42, 55, 55];
+    
+    musicInterval = setInterval(() => {
+        if (gameState !== 'PLAYING') return;
+        
+        // Lead Arpeggio
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(notes[noteIndex % notes.length] * (Math.random() > 0.8 ? 2 : 1), audioCtx.currentTime);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        gain.gain.setValueAtTime(0.05, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.1);
+
+        // Bass Pulse
+        if (noteIndex % 2 === 0) {
+            const bassOsc = audioCtx.createOscillator();
+            const bassGain = audioCtx.createGain();
+            bassOsc.type = 'sawtooth';
+            bassOsc.frequency.setValueAtTime(bass[(noteIndex / 2) % bass.length], audioCtx.currentTime);
+            const filter = audioCtx.createBiquadFilter();
+            filter.type = 'lowpass';
+            filter.frequency.setValueAtTime(400, audioCtx.currentTime);
+            
+            bassOsc.connect(filter);
+            filter.connect(bassGain);
+            bassGain.connect(audioCtx.destination);
+            
+            bassGain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            bassGain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.2);
+            bassOsc.start();
+            bassOsc.stop(audioCtx.currentTime + 0.2);
+        }
+
+        noteIndex++;
+    }, 125); // 120ms tick ~ 120 BPM 16th notes
+}
+
+function stopMusic() {
+    if (musicInterval) {
+        clearInterval(musicInterval);
+        musicInterval = null;
+    }
+}
+
+// --- Game Variables ---
+let canvas, ctx;
+let score = 0;
+let highScore = localStorage.getItem('defendEarth_highScore') || 0;
+let lives = 3;
+let gameState = 'MENU';
+let canRevive = true;
+let lastTime = 0;
+let spawnTimer = 0;
+let shakeTime = 0;
+
+let player = { x: 0, y: 0, w: 36, h: 36, cooldown: 0, flash: 0, tripleTime: 0, shield: 0 };
+let bullets = [];
+let aliens = [];
+let particles = [];
+let powerups = [];
+let stars = [];
+let keys = {};
+
+for(let i=0; i<80; i++) {
+    stars.push({
+        x: Math.random() * CANVAS_WIDTH,
+        y: Math.random() * CANVAS_HEIGHT,
+        size: Math.random() * 2 + 1,
+        speed: Math.random() * 2 + 0.5,
+        alpha: Math.random() * 0.5 + 0.2
+    });
+}
+
+// --- Poki SDK Logic ---
+function init() {
+    PokiSDK.init().then(() => {
+        console.log("Poki SDK initialized");
+        startLoading();
+    }).catch(() => {
+        startLoading();
+    });
+}
+
+function startLoading() {
+    setTimeout(loadingComplete, 500);
+}
+
+function loadingComplete() {
+    PokiSDK.gameLoadingFinished();
+    showOverlay();
+}
+
+function startGame() {
+    score = 0;
+    lives = 3;
+    canRevive = true;
+    aliens = [];
+    bullets = [];
+    particles = [];
+    powerups = [];
+    player.x = CANVAS_WIDTH / 2 - player.w / 2;
+    player.y = CANVAS_HEIGHT - 80;
+    player.flash = 0;
+    player.tripleTime = 0;
+    player.shield = 0;
+    
+    updateHUD();
+    hideOverlay();
+    gameState = 'PLAYING';
+    PokiSDK.gameplayStart();
+    playMusic();
+    playSound(440, 'square', 0.1);
+}
+
+function onDeath() {
+    gameState = 'GAMEOVER';
+    shakeTime = 30;
+    stopMusic();
+    playSound(110, 'sawtooth', 0.5);
+    PokiSDK.gameplayStop();
+
+    if (score > highScore) {
+        highScore = score;
+        localStorage.setItem('defendEarth_highScore', highScore);
+    }
+
+    if (canRevive) {
+        document.getElementById('menuContent').innerHTML = `
+            <h1>CRITICAL DAMAGE</h1>
+            <p>Shields depleted. Score: ${score}</p>
+            <button id="reviveBtn">REPAIR (AD)</button>
+            <p style="margin-top:20px; font-size:14px; cursor:pointer; opacity:0.6" onclick="restartLevel()">Abandon Mission</p>
+        `;
+        document.getElementById('reviveBtn').onclick = () => {
+            PokiSDK.rewardedBreak().then((success) => {
+                if (success) {
+                    lives = 2;
+                    canRevive = false;
+                    updateHUD();
+                    hideOverlay();
+                    gameState = 'PLAYING';
+                    PokiSDK.gameplayStart();
+                    playMusic();
+                } else {
+                    restartLevel();
+                }
+            });
+        };
+        showOverlay();
+    } else {
+        restartLevel();
+    }
+}
+
+function restartLevel() {
+    PokiSDK.gameplayStop();
+    PokiSDK.commercialBreak().then(() => {
+        document.getElementById('menuContent').innerHTML = `
+            <h1>MISSION OVER</h1>
+            <p>Final Score: ${score}<br/>Best: ${highScore}</p>
+            <button id="restartBtn">RETRY</button>
+        `;
+        document.getElementById('restartBtn').onclick = startGame;
+        showOverlay();
+    });
+}
+
+// --- Utils ---
+function showOverlay() { document.getElementById('overlay').classList.remove('hidden'); }
+function hideOverlay() { document.getElementById('overlay').classList.add('hidden'); }
+function updateHUD() {
+    document.getElementById('score').innerText = score;
+    document.getElementById('highScore').innerText = highScore;
+}
+
+function spawnAlien() {
+    const w = 32, h = 32;
+    const speedMult = 1 + (score / 10000);
+    aliens.push({
+        x: Math.random() * (CANVAS_WIDTH - w),
+        y: -h,
+        w: w, h: h,
+        speed: (ALIEN_SPEED_BASE + Math.random()) * speedMult,
+        color: score > 5000 ? '#ff00ff' : '#ff4081'
+    });
+}
+
+function spawnPowerup(x, y) {
+    const types = ['TRIPLE', 'SHIELD'];
+    const type = types[Math.floor(Math.random() * types.length)];
+    powerups.push({ x, y, w: 24, h: 24, type, speed: 2 });
+}
+
+function createExplosion(x, y, color, count = 12) {
+    for (let i = 0; i < count; i++) {
+        particles.push({
+            x, y,
+            vx: (Math.random() - 0.5) * 6,
+            vy: (Math.random() - 0.5) * 6,
+            life: 1.0,
+            size: Math.random() * 4 + 2,
+            color: color || '#ffaa00'
+        });
+    }
+}
+
+// --- Core Loop ---
+function update(dt) {
+    stars.forEach(s => {
+        s.y += s.speed;
+        if (s.y > CANVAS_HEIGHT) { s.y = -10; s.x = Math.random() * CANVAS_WIDTH; }
+    });
+
+    if (gameState !== 'PLAYING') return;
+
+    if (shakeTime > 0) shakeTime--;
+    if (player.tripleTime > 0) player.tripleTime--;
+
+    // Movement
+    if (keys['ArrowLeft'] || keys['KeyA'] || keys['TouchLeft']) player.x -= PLAYER_SPEED;
+    if (keys['ArrowRight'] || keys['KeyD'] || keys['TouchRight']) player.x += PLAYER_SPEED;
+    player.x = Math.max(0, Math.min(CANVAS_WIDTH - player.w, player.x));
+
+    // Shooting
+    if ((keys['Space'] || keys['TouchShoot']) && player.cooldown <= 0) {
+        if (player.tripleTime > 0) {
+            bullets.push({ x: player.x + player.w/2 - 3, y: player.y, w: 6, h: 14, vx: 0 });
+            bullets.push({ x: player.x, y: player.y + 10, w: 6, h: 14, vx: -1 });
+            bullets.push({ x: player.x + player.w - 6, y: player.y + 10, w: 6, h: 14, vx: 1 });
+        } else {
+            bullets.push({ x: player.x + player.w / 2 - 3, y: player.y, w: 6, h: 14, vx: 0 });
+        }
+        player.cooldown = 12;
+        playSound(880, 'square', 0.05, 0.05);
+    }
+    if (player.cooldown > 0) player.cooldown--;
+    if (player.flash > 0) player.flash--;
+
+    for (let i = bullets.length - 1; i >= 0; i--) {
+        bullets[i].y -= BULLET_SPEED;
+        bullets[i].x += bullets[i].vx || 0;
+        if (bullets[i].y < -20) bullets.splice(i, 1);
+    }
+
+    spawnTimer += dt;
+    if (spawnTimer > Math.max(250, SPAWN_RATE_BASE - score / 20)) {
+        spawnAlien();
+        spawnTimer = 0;
+    }
+
+    // Powerups
+    for (let i = powerups.length - 1; i >= 0; i--) {
+        let p = powerups[i];
+        p.y += p.speed;
+        if (p.x < player.x + player.w && p.x + p.w > player.x && p.y < player.y + player.h && p.y + p.h > player.y) {
+            if (p.type === 'TRIPLE') player.tripleTime = 600;
+            if (p.type === 'SHIELD') player.shield = 1;
+            playSound(660, 'square', 0.2, 0.1);
+            powerups.splice(i, 1);
+            PokiSDK.happyTime(0.2);
+        } else if (p.y > CANVAS_HEIGHT) powerups.splice(i, 1);
+    }
+
+    // Aliens
+    for (let i = aliens.length - 1; i >= 0; i--) {
+        let a = aliens[i];
+        a.y += a.speed;
+
+        for (let j = bullets.length - 1; j >= 0; j--) {
+            let b = bullets[j];
+            if (b.x < a.x + a.w && b.x + b.w > a.x && b.y < a.y + a.h && b.y + b.h > a.y) {
+                createExplosion(a.x + a.w/2, a.y + a.h/2, '#40c6ff');
+                playSound(220, 'sawtooth', 0.1, 0.05);
+                if (Math.random() < 0.1) spawnPowerup(a.x, a.y);
+                aliens.splice(i, 1);
+                bullets.splice(j, 1);
+                score += 100;
+                if (score % 2000 === 0) PokiSDK.happyTime(0.5);
+                updateHUD();
+                break;
+            }
+        }
+
+        if (a && a.x < player.x + player.w && a.x + a.w > player.x && a.y < player.y + player.h && a.y + a.h > player.y) {
+            if (player.shield) {
+                player.shield = 0;
+                aliens.splice(i, 1);
+                createExplosion(a.x + a.w/2, a.y + a.h/2, '#fff', 20);
+                playSound(440, 'sawtooth', 0.2);
+                shakeTime = 10;
+            } else {
+                createExplosion(player.x + player.w/2, player.y + player.h/2, '#ff0000', 20);
+                playSound(110, 'sawtooth', 0.3);
+                aliens.splice(i, 1);
+                lives--;
+                shakeTime = 15;
+                player.flash = 10;
+                if (lives <= 0) onDeath();
+            }
+        } else if (a && a.y > CANVAS_HEIGHT) {
+            aliens.splice(i, 1);
+            lives--;
+            shakeTime = 10;
+            if (lives <= 0) onDeath();
+        }
+    }
+
+    for (let i = particles.length - 1; i >= 0; i--) {
+        let p = particles[i];
+        p.x += p.vx; p.y += p.vy; p.life -= 0.03;
+        if (p.life <= 0) particles.splice(i, 1);
+    }
+}
+
+function draw() {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+    if (shakeTime > 0) ctx.translate((Math.random()-0.5)*shakeTime, (Math.random()-0.5)*shakeTime);
+
+    stars.forEach(s => {
+        ctx.globalAlpha = s.alpha; ctx.fillStyle = '#fff';
+        ctx.fillRect(s.x, s.y, s.size, s.size);
+    });
+    ctx.globalAlpha = 1.0;
+
+    if (gameState === 'PLAYING' || gameState === 'GAMEOVER') {
+        // Powerups
+        powerups.forEach(p => {
+            ctx.fillStyle = p.type === 'TRIPLE' ? '#ffeb3b' : '#00e5ff';
+            ctx.fillRect(p.x, p.y, p.w, p.h);
+            ctx.strokeStyle = '#fff';
+            ctx.strokeRect(p.x + 2, p.y + 2, p.w - 4, p.h - 4);
+        });
+
+        // Player
+        if (player.flash % 2 === 0) {
+            if (player.shield) {
+                ctx.beginPath();
+                ctx.arc(player.x + player.w/2, player.y + player.h/2, player.w, 0, Math.PI*2);
+                ctx.strokeStyle = '#00e5ff';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
+            ctx.fillStyle = player.tripleTime > 0 ? '#ffeb3b' : '#40c6ff';
+            ctx.fillRect(player.x, player.y + 10, player.w, player.h - 10);
+            ctx.fillRect(player.x + player.w/2 - 6, player.y, 12, 10);
+            ctx.fillStyle = '#fff'; ctx.fillRect(player.x + 8, player.y + 14, 20, 8);
+            ctx.fillStyle = '#ffaa00';
+            if (Math.random() > 0.5) ctx.fillRect(player.x + 4, player.y + player.h, 6, 8);
+            if (Math.random() > 0.5) ctx.fillRect(player.x + player.w - 10, player.y + player.h, 6, 8);
+        }
+
+        bullets.forEach(b => {
+            ctx.shadowBlur = 10; ctx.shadowColor = '#40c6ff';
+            ctx.fillStyle = '#fff'; ctx.fillRect(b.x, b.y, b.w, b.h);
+            ctx.shadowBlur = 0;
+        });
+
+        aliens.forEach(a => {
+            ctx.fillStyle = a.color;
+            ctx.fillRect(a.x + 4, a.y, a.w - 8, a.h);
+            ctx.fillRect(a.x, a.y + 8, a.w, a.h - 16);
+            ctx.fillStyle = '#000';
+            ctx.fillRect(a.x + 6, a.y + 8, 6, 6); ctx.fillRect(a.x + a.w - 12, a.y + 8, 6, 6);
+        });
+
+        particles.forEach(p => {
+            ctx.globalAlpha = p.life; ctx.fillStyle = p.color;
+            ctx.fillRect(p.x, p.y, p.size, p.size);
+        });
+        ctx.globalAlpha = 1.0;
+    }
+}
+
+function loop(timestamp) {
+    let dt = timestamp - lastTime;
+    lastTime = timestamp;
+    update(dt); draw();
+    requestAnimationFrame(loop);
+}
+
+window.onload = () => {
+    canvas = document.getElementById('gameCanvas');
+    ctx = canvas.getContext('2d');
+    canvas.width = CANVAS_WIDTH; canvas.height = CANVAS_HEIGHT;
+
+    window.addEventListener('keydown', e => {
+        keys[e.code] = true;
+        if (e.code === 'KeyP' && gameState === 'PLAYING') {
+            gameState = 'PAUSED'; showOverlay();
+            document.getElementById('menuContent').innerHTML = '<h1>PAUSED</h1><button id="resumeBtn">RESUME</button>';
+            document.getElementById('resumeBtn').onclick = () => { hideOverlay(); gameState = 'PLAYING'; };
+        }
+    });
+    window.addEventListener('keyup', e => keys[e.code] = false);
+
+    const handleCanvasInput = (e) => {
+        if (gameState !== 'PLAYING') return;
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        let clientX;
+        if (e.touches && e.touches.length > 0) {
+            clientX = e.touches[0].clientX;
+        } else {
+            clientX = e.clientX;
+        }
+        const canvasX = (clientX - rect.left) * scaleX;
+        player.x = canvasX - player.w / 2;
+        player.x = Math.max(0, Math.min(CANVAS_WIDTH - player.w, player.x));
+    };
+
+    canvas.addEventListener('mousedown', (e) => { 
+        if(e.button === 0) {
+            handleCanvasInput(e); 
+            keys['TouchShoot'] = true;
+        }
+    });
+    window.addEventListener('mouseup', (e) => { if(e.button === 0) keys['TouchShoot'] = false; });
+    canvas.addEventListener('mousemove', (e) => { if(e.buttons === 1) handleCanvasInput(e); });
+    canvas.addEventListener('touchstart', (e) => { e.preventDefault(); handleCanvasInput(e); keys['TouchShoot'] = true; });
+    canvas.addEventListener('touchmove', (e) => { e.preventDefault(); handleCanvasInput(e); });
+    canvas.addEventListener('touchend', (e) => { keys['TouchShoot'] = false; });
+
+    const addTouch = (id, key) => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener('touchstart', (e) => { e.preventDefault(); keys[key] = true; });
+            el.addEventListener('touchend', (e) => { e.preventDefault(); keys[key] = false; });
+        }
+    };
+    addTouch('btnLeft', 'TouchLeft');
+    addTouch('btnRight', 'TouchRight');
+    addTouch('btnShoot', 'TouchShoot');
+
+    document.getElementById('startBtn').onclick = startGame;
+    init();
+    requestAnimationFrame(loop);
+};
+</script>
+</body>
+</html>
